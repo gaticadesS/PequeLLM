@@ -37,7 +37,8 @@ RUN pip install \
         tqdm \
         matplotlib \
         umap-learn \
-        scikit-learn
+        scikit-learn \
+        streamlit
 
 # El repo se monta en runtime (-v $REPO:/workspace/repo) para que los
 # estudiantes editen archivos en el host y ejecuten sin reconstruir la

@@ -64,7 +64,7 @@ def generate(
     device: str,
 ) -> str:
     entry = {"instruction": instruction, "input": input_text, "output": ""}
-    prompt = format_input(entry) + "\n\n### Response:\n"
+    prompt = format_input(entry) + "\n\n### Respuesta:\n"
     prompt_ids = tokenizer.encode(prompt).ids
     idx = torch.tensor([prompt_ids], dtype=torch.long, device=device)
 

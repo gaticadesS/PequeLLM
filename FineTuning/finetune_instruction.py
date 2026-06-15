@@ -60,17 +60,25 @@ class InstructionFineTuneConfig:
 
 
 def format_input(entry: Dict[str, str]) -> str:
-    instruction_text = (
-        "Below is an instruction that describes a task. "
-        "Write a response that appropriately completes the request."
-        f"\n\n### Instruction:\n{entry['instruction']}"
-    )
-    input_text = f"\n\n### Input:\n{entry['input']}" if entry.get("input") else ""
+    has_input = bool(entry.get("input"))
+    if has_input:
+        intro = (
+            "A continuación hay una instrucción que describe una tarea, junto con "
+            "una entrada que proporciona más contexto. Escribe una respuesta que "
+            "complete adecuadamente lo que se pide."
+        )
+    else:
+        intro = (
+            "A continuación hay una instrucción que describe una tarea. Escribe una "
+            "respuesta que complete adecuadamente lo que se pide."
+        )
+    instruction_text = f"{intro}\n\n### Instrucción:\n{entry['instruction']}"
+    input_text = f"\n\n### Entrada:\n{entry['input']}" if has_input else ""
     return instruction_text + input_text
 
 
 def format_response(entry: Dict[str, str]) -> str:
-    return f"\n\n### Response:\n{entry['output']}"
+    return f"\n\n### Respuesta:\n{entry['output']}"
 
 
 def read_instruction_json(path: Path) -> List[Dict[str, str]]:
