@@ -89,11 +89,12 @@ Todos los scripts usan PyTorch y leen datos desde `train.bin` con `np.memmap`.
 ### `emb_gpt2.py`
 
 - Que hace:
-  - Implementa una version V2.0 del modelo, mas grande que los anteriores:
-    - `N_EMBD = 192`
-    - `BLOCK_SIZE = 128`
-    - `N_LAYER = 4`
-    - `N_HEAD = 6`
+  - Implementa el modelo GPT-2 Small (ver [Emb_gptMed.py](Emb_gptMed.py) para la
+    version Medium), con arquitectura instrumentada configurable por CLI:
+    - `n_embd = 768`
+    - `block_size = 128`
+    - `n_layer = 12`
+    - `n_head = 12`
   - Incluye entrenamiento instrumentado:
     - train/val loss
     - norma global de gradiente
@@ -105,7 +106,7 @@ Todos los scripts usan PyTorch y leen datos desde `train.bin` con `np.memmap`.
 - Para que sirve:
   - Pasar de un prototipo didactico a un entrenamiento mas serio, reproducible y medible.
 - Archivos relacionados:
-  - Checkpoint esperado: `pequellm_v2_checkpoint.pth`
+  - Checkpoint esperado: `pequellm_gpt2small_checkpoint.pth`
   - Tokenizador esperado: `tokenizer-culturax-es-hf.json`
   - Carpeta de resultados: `Embeddings/artifacts_gpt2/<run_name>`
 

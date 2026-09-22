@@ -17,12 +17,17 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from pathlib import Path
 from typing import Dict, List
 
-from datasets import load_dataset
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TOKENIZADOR_DIR = REPO_ROOT / "Tokenizador"
+if str(TOKENIZADOR_DIR) not in sys.path:
+    sys.path.insert(0, str(TOKENIZADOR_DIR))
+
+from security_utils import load_dataset_secure  # noqa: E402
+
 DEFAULT_DATASET = "bertin-project/alpaca-spanish"
 
 
@@ -94,7 +99,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     print(f"[INFO] descargando dataset '{args.dataset}' (split={args.split})…")
-    dataset = load_dataset(args.dataset, split=args.split)
+    dataset = load_dataset_secure(args.dataset, split=args.split)
 
     rows = normalize_rows(dataset)
     print(f"[INFO] ejemplos válidos tras normalizar: {len(rows)}")

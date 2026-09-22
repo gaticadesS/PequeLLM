@@ -62,7 +62,7 @@ def _label_for(path: Path) -> str:
     full = str(path).lower()
     if is_instruction_checkpoint(full):
         # Distinguir por la carpeta de la corrida (instruction_<fecha>).
-        return f"Instruct ES (afinado)"
+        return f"Instruct ES (afinado) — {path.parent.name}"
     if "medium" in name or "med" in name:
         return "GPT-2 Medium"
     if "pesado" in name or "small" in name:

@@ -52,10 +52,11 @@ class InstructionFineTuneConfig:
     generate_tokens: int = 80
 
     # Fallback architecture only used when no checkpoint config is available.
+    # Match GPT-2 Small defaults (Embeddings/emb_gpt2.py TrainConfig).
     vocab_size: int = 65536
     n_embd: int = 768
-    n_head: int = 24
-    n_layer: int = 4
+    n_head: int = 12
+    n_layer: int = 12
     block_size: int = 128
 
 
@@ -255,7 +256,7 @@ def build_run_dir(output_root: Path, run_name: str) -> Path:
 @torch.no_grad()
 def generate_response(model: GPTModel, tokenizer: Tokenizer, entry: Dict[str, str], device: str, max_new_tokens: int) -> str:
     model.eval()
-    prompt = format_input(entry) + "\n\n### Response:\n"
+    prompt = format_input(entry) + "\n\n### Respuesta:\n"
     prompt_ids = tokenizer.encode(prompt).ids
     idx = torch.tensor([prompt_ids], dtype=torch.long, device=device)
     for _ in range(max_new_tokens):
