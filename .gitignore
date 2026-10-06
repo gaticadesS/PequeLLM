@@ -24,3 +24,6 @@ Embeddings/slide_arquitectura_embeddings_modelo.png
 .claude/
 CLAUDE.md
 openspec/
+
+# macOS
+.DS_Store

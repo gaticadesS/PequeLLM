@@ -1,7 +1,6 @@
 # Embeddings - guia de archivos
 
 Esta carpeta contiene una progresion didactica para construir un mini GPT desde componentes basicos.
-Tambien incluye una version mas grande (V2.0) y scripts de comparacion semantica contra un modelo profesional.
 Todos los scripts usan PyTorch y leen datos desde `train.bin` con `np.memmap`.
 
 ## Requisitos
@@ -20,11 +19,9 @@ Todos los scripts usan PyTorch y leen datos desde `train.bin` con `np.memmap`.
 4. `emb_bucle.py`
 5. `emb_bb.py`
 6. `emb_gpt2.py`
-7. `comparacion_1.py`
-8. `comparacion_2.py`
-9. `GPT2_DIAGNOSTICS.md`
-10. `presentation_report.py`
-11. `generate_prompt.py`
+7. `GPT2_DIAGNOSTICS.md`
+8. `presentation_report.py`
+9. `generate_prompt.py`
 
 ## Explicacion de cada archivo
 
@@ -110,32 +107,6 @@ Todos los scripts usan PyTorch y leen datos desde `train.bin` con `np.memmap`.
   - Tokenizador esperado: `tokenizer-culturax-es-hf.json`
   - Carpeta de resultados: `Embeddings/artifacts_gpt2/<run_name>`
 
-### `comparacion_1.py`
-
-- Que hace:
-  - Carga un checkpoint "undertrained" (`mi_modelo_undertrained.pth`).
-  - Extrae embeddings de palabras frecuentes de 3 categorias semanticas.
-  - Reduce dimensionalidad con PCA y grafica esos vectores.
-  - Compara lado a lado contra embeddings de un modelo profesional (`paraphrase-multilingual-MiniLM-L12-v2`).
-- Para que sirve:
-  - Visualizar si el espacio semantico de su modelo ya muestra estructura o sigue caotico.
-
-### `comparacion_2.py`
-
-- Que hace:
-  - Repite la misma idea de comparacion, pero para la arquitectura V2.0.
-  - Carga `pequellm_v2_checkpoint.pth`.
-  - Grafica PCA del modelo de ustedes vs el modelo profesional.
-- Para que sirve:
-  - Medir visualmente el avance semantico entre version inicial y version V2.0.
-
-### `Comp1.png` y `Comp2.png`
-
-- Que son:
-  - Imagenes de salida de las comparaciones (graficas PCA).
-- Para que sirven:
-  - Documentar resultados para reportes/presentaciones sin tener que volver a correr scripts.
-
 ### `GPT2_DIAGNOSTICS.md`
 
 - Que hace:
@@ -202,8 +173,6 @@ python Embeddings/emb_bucle.py
 python Embeddings/emb_bb.py
 python Embeddings/emb_gpt2.py
 python Embeddings/generate_prompt.py --prompt "Hola, soy un modelo de inteligencia artificial"
-python Embeddings/comparacion_1.py
-python Embeddings/comparacion_2.py
 ```
 
 Al terminar `emb_gpt2.py`, se genera automaticamente:
@@ -227,4 +196,3 @@ Nota sobre tipos numericos:
 - Todos los scripts comparten la misma funcion `get_batch` basada en `np.memmap`, lo cual es eficiente en RAM.
 - Para consistencia con tus datos actuales, conviene unificar todos a `VOCAB_SIZE = 65536` o derivarlo automaticamente del tokenizador/dataset.
 - Estos scripts son excelentes para aprendizaje incremental: cada archivo agrega exactamente una idea nueva.
-- Las comparaciones (`comparacion_1.py` y `comparacion_2.py`) dependen de checkpoints ya entrenados; sin esos archivos solo mostraran error de carga.
