@@ -172,7 +172,8 @@ case "$cmd" in
         # Fine-tuning de instrucciones sobre el modelo Medium. Solo-lectura sobre
         # el checkpoint base; escribe el modelo afinado en el volumen de datos.
         # MEDIUM_CKPT permite apuntar a otro checkpoint base.
-        # Args extra se pasan tal cual (p. ej. --max-length 256 --batch-size 8 --max-epochs 50).
+        # Args extra se pasan tal cual (p. ej. --batch-size 16 --max-epochs 3 --lr 3e-5).
+        # --max-length se resuelve solo al block_size del checkpoint (256 en Medium).
         "$RUNTIME" run "${common_run_args[@]}" "$IMAGE" \
             python /workspace/repo/FineTuning/finetune_instruction.py \
                 --base-checkpoint-path /workspace/data/"${MEDIUM_CKPT:-pequellm_medium_checkpoint.pth}" \

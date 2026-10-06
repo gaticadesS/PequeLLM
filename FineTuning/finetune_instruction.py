@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import random
+import signal
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -34,12 +36,16 @@ class InstructionFineTuneConfig:
     output_root: str = str(REPO_ROOT / "FineTuning" / "artifacts_instruction")
     run_name: str = ""
 
-    batch_size: int = 2
-    max_length: int = 128
+    batch_size: int = 8
+    # 0 = usar el block_size del checkpoint base (128 en Small, 256 en Medium).
+    max_length: int = 0
     max_epochs: int = 5 # 2 og
     eval_interval: int = 50
-    eval_batches: int = 10
+    # Batches de validación por evaluación periódica; 0 = todo el set de validación.
+    eval_batches: int = 25
     lr: float = 5e-5
+    warmup_steps: int = 100
+    lr_min_ratio: float = 0.1
     weight_decay: float = 0.1
     grad_clip: float = 1.0
     seed: int = 42
@@ -48,6 +54,9 @@ class InstructionFineTuneConfig:
 
     freeze_base: bool = False
     mask_prompt_tokens: bool = False
+    # Descartar ejemplos que no caben en max_length en vez de truncarlos: un
+    # ejemplo truncado pierde la respuesta y el </s> y enseña a no terminar.
+    drop_too_long: bool = True
     generate_samples: int = 5
     generate_tokens: int = 80
 
@@ -78,8 +87,12 @@ def format_input(entry: Dict[str, str]) -> str:
     return instruction_text + input_text
 
 
+IGNORE_INDEX = -100
+RESPONSE_MARKER = "\n\n### Respuesta:\n"
+
+
 def format_response(entry: Dict[str, str]) -> str:
-    return f"\n\n### Respuesta:\n{entry['output']}"
+    return f"{RESPONSE_MARKER}{entry['output']}"
 
 
 def read_instruction_json(path: Path) -> List[Dict[str, str]]:
@@ -96,15 +109,29 @@ def read_instruction_json(path: Path) -> List[Dict[str, str]]:
 
 
 class InstructionDataset(Dataset):
-    def __init__(self, entries: Sequence[Dict[str, str]], tokenizer: Tokenizer, max_length: int, eos_token_id: int | None):
+    def __init__(
+        self,
+        entries: Sequence[Dict[str, str]],
+        tokenizer: Tokenizer,
+        max_length: int,
+        eos_token_id: int | None,
+        drop_too_long: bool = True,
+    ):
         self.items: List[Tuple[List[int], int]] = []
         self.entries = list(entries)
+        self.num_dropped = 0
+        self.num_truncated = 0
         for entry in self.entries:
             prompt_ids = tokenizer.encode(format_input(entry)).ids
             full_ids = tokenizer.encode(format_input(entry) + format_response(entry)).ids
             if eos_token_id is not None:
                 full_ids.append(eos_token_id)
-            full_ids = full_ids[:max_length]
+            if len(full_ids) > max_length:
+                if drop_too_long:
+                    self.num_dropped += 1
+                    continue
+                full_ids = full_ids[:max_length]
+                self.num_truncated += 1
             if len(full_ids) < 2:
                 continue
             self.items.append((full_ids, min(len(prompt_ids), len(full_ids))))
@@ -217,24 +244,55 @@ def configure_optimizer(model: nn.Module, cfg: InstructionFineTuneConfig) -> tor
     )
 
 
+_shutdown_requested = False
+
+
+def _handle_shutdown_signal(signum: int, frame) -> None:
+    global _shutdown_requested
+    name = "SIGINT (Ctrl+C)" if signum == signal.SIGINT else "SIGTERM"
+    print(f"\n[SIGNAL] {name} recibida: terminando tras el paso actual y evaluando el mejor checkpoint...")
+    _shutdown_requested = True
+
+
+def get_lr(step: int, total_steps: int, cfg: InstructionFineTuneConfig) -> float:
+    """Warmup lineal y luego decaimiento coseno hasta lr * lr_min_ratio.
+
+    El warmup se limita a la mitad de los pasos totales para que corridas muy
+    cortas (smoke tests) lleguen igualmente al LR maximo.
+    """
+    lr_min = cfg.lr * cfg.lr_min_ratio
+    warmup = min(cfg.warmup_steps, total_steps // 2)
+    if warmup > 0 and step < warmup:
+        return cfg.lr * (step + 1) / warmup
+    progress = (step - warmup) / max(1, total_steps - warmup)
+    progress = min(1.0, max(0.0, progress))
+    return lr_min + 0.5 * (1.0 + math.cos(math.pi * progress)) * (cfg.lr - lr_min)
+
+
 @torch.no_grad()
 def evaluate_loss(model: GPTModel, loader: DataLoader, device: str, amp, max_batches: int) -> float:
+    """Loss media ponderada por token (ignora padding y tokens enmascarados).
+
+    max_batches <= 0 evalua el loader completo.
+    """
     model.eval()
     total_loss = 0.0
-    total_batches = 0
-    for xb, yb in loader:
+    total_tokens = 0
+    for batch_idx, (xb, yb) in enumerate(loader, start=1):
         xb = xb.to(device)
         yb = yb.to(device)
-        with torch.autocast(device_type=amp.device_type, dtype=amp.dtype, enabled=amp.enabled):
-            _, loss = model(xb, yb)
-        if loss is None:
-            raise RuntimeError("Evaluation loss unexpectedly became None")
-        total_loss += float(loss.item())
-        total_batches += 1
-        if 0 < max_batches <= total_batches:
+        n_tokens = int((yb != IGNORE_INDEX).sum().item())
+        if n_tokens > 0:
+            with torch.autocast(device_type=amp.device_type, dtype=amp.dtype, enabled=amp.enabled):
+                _, loss = model(xb, yb)
+            if loss is None:
+                raise RuntimeError("Evaluation loss unexpectedly became None")
+            total_loss += float(loss.item()) * n_tokens
+            total_tokens += n_tokens
+        if 0 < max_batches <= batch_idx:
             break
     model.train()
-    return total_loss / max(1, total_batches)
+    return total_loss / max(1, total_tokens)
 
 
 def write_metrics_header(path: Path) -> None:
@@ -255,17 +313,21 @@ def build_run_dir(output_root: Path, run_name: str) -> Path:
 
 @torch.no_grad()
 def generate_response(model: GPTModel, tokenizer: Tokenizer, entry: Dict[str, str], device: str, max_new_tokens: int) -> str:
+    """Respuesta greedy; se detiene en </s>, que es lo que el modelo aprende a emitir al final."""
     model.eval()
-    prompt = format_input(entry) + "\n\n### Respuesta:\n"
-    prompt_ids = tokenizer.encode(prompt).ids
+    eos_id = tokenizer.token_to_id("</s>")
+    prompt_ids = tokenizer.encode(format_input(entry) + RESPONSE_MARKER).ids
     idx = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+    new_ids: List[int] = []
     for _ in range(max_new_tokens):
         idx_cond = idx[:, -model.cfg.block_size :]
         logits, _ = model(idx_cond)
         next_id = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+        if eos_id is not None and int(next_id.item()) == eos_id:
+            break
         idx = torch.cat((idx, next_id), dim=1)
-    text = tokenizer.decode(idx[0].tolist())
-    return text[len(prompt) :].strip() if text.startswith(prompt) else text
+        new_ids.append(int(next_id.item()))
+    return tokenizer.decode(new_ids).strip()
 
 
 def save_sample_responses(
@@ -290,7 +352,28 @@ def save_sample_responses(
     (run_dir / "sample_responses.json").write_text(json.dumps(samples, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _perplexity(loss: float) -> float:
+    return math.exp(min(loss, 20.0))
+
+
 def train_instruction(cfg: InstructionFineTuneConfig) -> Path:
+    """Ejecuta el fine-tuning instalando handlers para que Ctrl+C / SIGTERM cierren limpio."""
+    global _shutdown_requested
+    _shutdown_requested = False
+    previous_handlers = {}
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[sig] = signal.signal(sig, _handle_shutdown_signal)
+    except ValueError:  # fuera del hilo principal no se pueden registrar handlers
+        previous_handlers = {}
+    try:
+        return _train_instruction(cfg)
+    finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+
+
+def _train_instruction(cfg: InstructionFineTuneConfig) -> Path:
     random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
     if torch.cuda.is_available():
@@ -314,25 +397,37 @@ def train_instruction(cfg: InstructionFineTuneConfig) -> Path:
     model.to(device)
     amp = resolve_amp_settings(base_cfg, device)
 
-    train_ds = InstructionDataset(train_entries, tokenizer, cfg.max_length, eos_token_id)
-    val_ds = InstructionDataset(val_entries, tokenizer, cfg.max_length, eos_token_id)
+    # max_length=0 -> usar la ventana de contexto completa del modelo base.
+    if cfg.max_length <= 0:
+        cfg.max_length = base_cfg.block_size
+
+    train_ds = InstructionDataset(train_entries, tokenizer, cfg.max_length, eos_token_id, cfg.drop_too_long)
+    val_ds = InstructionDataset(val_entries, tokenizer, cfg.max_length, eos_token_id, cfg.drop_too_long)
+    test_ds = InstructionDataset(test_entries, tokenizer, cfg.max_length, eos_token_id, cfg.drop_too_long)
 
     collate_fn = lambda batch: collate_instruction_batch(
         batch=batch,
         pad_token_id=pad_token_id,
-        ignore_index=-100,
+        ignore_index=IGNORE_INDEX,
         mask_prompt_tokens=cfg.mask_prompt_tokens,
     )
     train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn)
     val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
+    test_loader = DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
 
     optimizer = configure_optimizer(model, cfg)
     scaler = torch.amp.GradScaler("cuda", enabled=(amp.use_grad_scaler and device == "cuda"))
+    total_steps = cfg.max_epochs * len(train_loader)
 
     run_dir = build_run_dir(Path(cfg.output_root), cfg.run_name)
     run_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = run_dir / "metrics.csv"
+    best_ckpt_path = run_dir / "best_instruction_checkpoint.pth"
     write_metrics_header(metrics_path)
+    dataset_stats = {
+        split: {"examples": len(ds), "dropped_too_long": ds.num_dropped, "truncated": ds.num_truncated}
+        for split, ds in (("train", train_ds), ("val", val_ds), ("test", test_ds))
+    }
     (run_dir / "config.json").write_text(
         json.dumps(
             {
@@ -341,9 +436,8 @@ def train_instruction(cfg: InstructionFineTuneConfig) -> Path:
                 "checkpoint_loaded": checkpoint_loaded,
                 "pad_token_id": pad_token_id,
                 "eos_token_id": eos_token_id,
-                "train_examples": len(train_ds),
-                "val_examples": len(val_ds),
-                "test_examples": len(test_entries),
+                "total_steps": total_steps,
+                "datasets": dataset_stats,
             },
             ensure_ascii=True,
             indent=2,
@@ -356,14 +450,36 @@ def train_instruction(cfg: InstructionFineTuneConfig) -> Path:
     print(f"[INFO] device={device} precision={cfg.precision} amp={amp.enabled} dtype={amp.dtype}")
     print(f"[INFO] checkpoint_loaded={checkpoint_loaded}")
     print(f"[INFO] trainable_params={trainable:,} total_params={total:,}")
-    print(f"[INFO] examples train={len(train_ds)} val={len(val_ds)} test={len(test_entries)}")
+    print(f"[INFO] max_length={cfg.max_length} (block_size del modelo={base_cfg.block_size}) batch_size={cfg.batch_size}")
+    for split, stats in dataset_stats.items():
+        print(
+            f"[INFO] {split}: {stats['examples']} ejemplos usables "
+            f"(descartados por largo: {stats['dropped_too_long']}, truncados: {stats['truncated']})"
+        )
+    print(f"[INFO] pasos totales={total_steps} warmup={min(cfg.warmup_steps, total_steps // 2)} lr_max={cfg.lr:g}")
     print(f"[INFO] run_dir={run_dir}")
+
+    def save_best() -> None:
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "base_config": asdict(base_cfg),
+                "instruction_fine_tune_config": asdict(cfg),
+            },
+            best_ckpt_path,
+        )
 
     best_val_loss = float("inf")
     global_step = 0
+    lr = cfg.lr
+    stop_reason = "max_epochs"
+    interval_losses: List[float] = []
+    model.train()
     for epoch in range(1, cfg.max_epochs + 1):
-        model.train()
         for xb, yb in train_loader:
+            lr = get_lr(global_step, total_steps, cfg)
+            for group in optimizer.param_groups:
+                group["lr"] = lr
             global_step += 1
             xb = xb.to(device)
             yb = yb.to(device)
@@ -384,43 +500,55 @@ def train_instruction(cfg: InstructionFineTuneConfig) -> Path:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
                 optimizer.step()
+            interval_losses.append(float(loss.item()))
 
             if global_step % cfg.eval_interval == 0:
+                train_loss = sum(interval_losses) / len(interval_losses)
+                interval_losses.clear()
                 val_loss = evaluate_loss(model, val_loader, device, amp, cfg.eval_batches)
-                append_metric(metrics_path, epoch, global_step, float(loss.item()), val_loss, cfg.lr)
+                append_metric(metrics_path, epoch, global_step, train_loss, val_loss, lr)
                 print(
                     f"[epoch {epoch:02d} step {global_step:05d}] "
-                    f"train_loss={float(loss.item()):.4f} val_loss={val_loss:.4f}"
+                    f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} lr={lr:.2e}"
                 )
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    torch.save(
-                        {
-                            "model": model.state_dict(),
-                            "base_config": asdict(base_cfg),
-                            "instruction_fine_tune_config": asdict(cfg),
-                        },
-                        run_dir / "best_instruction_checkpoint.pth",
-                    )
+                    save_best()
+
+            if _shutdown_requested:
+                stop_reason = "signal_interrupt"
+                break
+        if stop_reason == "signal_interrupt":
+            break
 
         val_loss = evaluate_loss(model, val_loader, device, amp, cfg.eval_batches)
-        append_metric(metrics_path, epoch, global_step, float("nan"), val_loss, cfg.lr)
+        append_metric(metrics_path, epoch, global_step, float("nan"), val_loss, lr)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(
-                {
-                    "model": model.state_dict(),
-                    "base_config": asdict(base_cfg),
-                    "instruction_fine_tune_config": asdict(cfg),
-                },
-                run_dir / "best_instruction_checkpoint.pth",
-            )
+            save_best()
         print(f"[epoch {epoch:02d} done] val_loss={val_loss:.4f}")
 
-    (run_dir / "final_metrics.json").write_text(json.dumps({"best_val_loss": best_val_loss}, indent=2), encoding="utf-8")
+    # Cierre: siempre sobre el MEJOR checkpoint (no sobre los pesos de la ultima epoca).
+    print(f"[INFO] entrenamiento terminado ({stop_reason}) en el paso {global_step}")
+    if not best_ckpt_path.exists():
+        save_best()
+    model.load_state_dict(torch.load(best_ckpt_path, map_location=device)["model"])
+    val_loss_full = evaluate_loss(model, val_loader, device, amp, 0)
+    test_loss = evaluate_loss(model, test_loader, device, amp, 0)
+    final_metrics = {
+        "stop_reason": stop_reason,
+        "global_step": global_step,
+        "best_val_loss": best_val_loss,
+        "val_loss": val_loss_full,
+        "val_perplexity": _perplexity(val_loss_full),
+        "test_loss": test_loss,
+        "test_perplexity": _perplexity(test_loss),
+        "datasets": dataset_stats,
+    }
+    (run_dir / "final_metrics.json").write_text(json.dumps(final_metrics, indent=2), encoding="utf-8")
     if cfg.generate_samples > 0:
         save_sample_responses(model, tokenizer, test_entries, run_dir, device, cfg.generate_samples, cfg.generate_tokens)
-    print(f"[INFO] best_val_loss={best_val_loss:.4f}")
+    print(f"[INFO] val_loss={val_loss_full:.4f} (ppl {_perplexity(val_loss_full):.1f}) | test_loss={test_loss:.4f} (ppl {_perplexity(test_loss):.1f})")
     return run_dir
 
 
@@ -440,6 +568,8 @@ def parse_args() -> InstructionFineTuneConfig:
     parser.add_argument("--eval-interval", type=int, default=cfg.eval_interval)
     parser.add_argument("--eval-batches", type=int, default=cfg.eval_batches)
     parser.add_argument("--lr", type=float, default=cfg.lr)
+    parser.add_argument("--warmup-steps", type=int, default=cfg.warmup_steps)
+    parser.add_argument("--lr-min-ratio", type=float, default=cfg.lr_min_ratio)
     parser.add_argument("--weight-decay", type=float, default=cfg.weight_decay)
     parser.add_argument("--grad-clip", type=float, default=cfg.grad_clip)
     parser.add_argument("--seed", type=int, default=cfg.seed)
@@ -447,6 +577,10 @@ def parse_args() -> InstructionFineTuneConfig:
     parser.add_argument("--precision", default=cfg.precision)
     parser.add_argument("--freeze-base", action="store_true")
     parser.add_argument("--mask-prompt-tokens", action="store_true")
+    parser.add_argument(
+        "--keep-truncated", action="store_true",
+        help="Truncar los ejemplos largos en vez de descartarlos (pierden la respuesta y el </s>).",
+    )
     parser.add_argument("--generate-samples", type=int, default=cfg.generate_samples)
     parser.add_argument("--generate-tokens", type=int, default=cfg.generate_tokens)
     parser.add_argument("--vocab-size", type=int, default=cfg.vocab_size)
@@ -469,6 +603,8 @@ def parse_args() -> InstructionFineTuneConfig:
     cfg.eval_interval = args.eval_interval
     cfg.eval_batches = args.eval_batches
     cfg.lr = args.lr
+    cfg.warmup_steps = args.warmup_steps
+    cfg.lr_min_ratio = args.lr_min_ratio
     cfg.weight_decay = args.weight_decay
     cfg.grad_clip = args.grad_clip
     cfg.seed = args.seed
@@ -476,6 +612,7 @@ def parse_args() -> InstructionFineTuneConfig:
     cfg.precision = args.precision
     cfg.freeze_base = args.freeze_base
     cfg.mask_prompt_tokens = args.mask_prompt_tokens
+    cfg.drop_too_long = not args.keep_truncated
     cfg.generate_samples = args.generate_samples
     cfg.generate_tokens = args.generate_tokens
     cfg.vocab_size = args.vocab_size

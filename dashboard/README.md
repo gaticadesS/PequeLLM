@@ -22,7 +22,8 @@ arma el prompt con el formato `### Instrucción / ### Respuesta` (el mismo del
 fine-tuning) y trata cada mensaje como una instrucción independiente.
 
 Flujo el día del demo:
-1. `Ctrl-c` al fine-tuning para detenerlo (el mejor checkpoint ya está guardado).
+1. `Ctrl-c` al fine-tuning para detenerlo: termina limpio, evalúa el mejor checkpoint en val/test
+   y escribe `final_metrics.json` (el mejor checkpoint ya está guardado).
 2. Levantar/refrescar el dashboard (`./run.sh dashboard`) — como el código se monta
    en vivo, basta refrescar el navegador para que aparezca el modelo afinado.
 3. Elegir el checkpoint *"Instruct ES (afinado)"* en el sidebar y chatear en español.
