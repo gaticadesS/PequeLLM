@@ -10,6 +10,7 @@
 #     ./run.sh train [args]   # entrenar pasando args extras a Emb_gptMed.py
 #     ./run.sh prepare-instr-es  # bajar Alpaca en espanol y generar splits (necesita red)
 #     ./run.sh finetune-instr [args]  # fine-tuning de instrucciones sobre el modelo Medium
+#     ./run.sh data           # estadisticas y muestra de texto de train.bin
 #     ./run.sh dashboard      # chat web (Streamlit) para probar el modelo, puerto 8501
 #     ./run.sh shell          # bash interactivo dentro del contenedor
 #
@@ -142,17 +143,10 @@ case "$cmd" in
                 --output-root     /workspace/data/artifacts_gpt2 \
                 "$@"
         ;;
-    pruebas)
-        ensure_image
-        ensure_volumes
-        # Ejecuta el script de pruebas interactivo
-        "$RUNTIME" run "${common_run_args[@]}" "$IMAGE" \
-            python /workspace/repo/Embeddings/pruebas.py
-        ;;
     data)
         ensure_image
         ensure_volumes
-        # Ejecuta el script de pruebas interactivo
+        # Muestra estadisticas y una muestra decodificada de train.bin
         "$RUNTIME" run "${common_run_args[@]}" "$IMAGE" \
             python /workspace/repo/data.py
         ;;
@@ -211,7 +205,7 @@ case "$cmd" in
 
     *)
         echo "ERROR: subcomando desconocido: '$cmd'" >&2
-        echo "       Usa: $0 [build|smoke|synth|prepare-data|train|prepare-instr-es|finetune-instr|dashboard|shell|help|pruebas|data]" >&2
+        echo "       Usa: $0 [build|smoke|synth|prepare-data|train|prepare-instr-es|finetune-instr|dashboard|shell|help|data]" >&2
         exit 2
         ;;
 esac
