@@ -42,7 +42,7 @@ from chat.memory import build_chat_prompt, clean_output  # noqa: E402
 # Plantilla de instrucción en español (misma fuente que el fine-tuning, para
 # que el prompt en el chat coincida con lo que el modelo afinado aprendió).
 sys.path.insert(0, str(REPO_ROOT / "FineTuning"))
-from finetune_instruction import format_input as format_instruction_input  # noqa: E402
+from finetune_instruction import RESPONSE_MARKER, format_input as format_instruction_input  # noqa: E402
 
 
 DEFAULT_TOKENIZER = str(REPO_ROOT / "tokenizer-culturax-es-hf.json")
@@ -238,7 +238,7 @@ if prompt:
     # Construcción del prompt según el modo.
     if instruction_mode:
         # Modelo afinado: formato Alpaca en español, una instrucción por turno.
-        prompt_text = format_instruction_input({"instruction": prompt, "input": ""}) + "\n\n### Respuesta:\n"
+        prompt_text = format_instruction_input({"instruction": prompt, "input": ""}) + RESPONSE_MARKER
         prompt_ids = tokenizer.encode(prompt_text).ids
         stats = {
             "prompt_tokens": len(prompt_ids),

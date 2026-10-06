@@ -608,3 +608,42 @@ queremos una prueba barata:
 ```
 
 Esto entrena el ultimo bloque, `ln_f` y `lm_head`.
+
+## Fine-tuning sobre el modelo propio (Small / Medium)
+
+`finetune_instruction.py` carga el checkpoint de `Emb_gptMed.py` o `emb_gpt2.py` y reconstruye
+la arquitectura desde la configuracion guardada dentro del checkpoint. En el contenedor:
+
+```bash
+./run.sh prepare-instr-es          # una vez: baja Alpaca-es y genera instruction_es_{train,val,test}.json
+./run.sh finetune-instr            # usa pequellm_medium_checkpoint.pth (MEDIUM_CKPT para otro)
+./run.sh finetune-instr --batch-size 16 --max-epochs 3
+```
+
+Comportamiento por defecto (pensado para el Medium, `block_size=256`):
+
+- `--max-length 0` (default): usa el `block_size` del checkpoint. Con el Small es 128 y con el
+  Medium 256. Antes el default era 128 fijo, lo que truncaba ~37 % de los ejemplos en espanol.
+- Los ejemplos que no caben se **descartan** (se reporta cuantos). Un ejemplo truncado pierde la
+  respuesta y el `</s>` final, y le ensena al modelo a no terminar. Para truncar igual: `--keep-truncated`.
+- `--batch-size 8`, warmup lineal de `--warmup-steps 100` y decaimiento coseno hasta
+  `lr * --lr-min-ratio` (0.1).
+- La validacion periodica usa `--eval-batches 25` (0 = todo el set de validacion).
+- `Ctrl-C` o `SIGTERM` cierran limpio: terminan el paso actual y ejecutan el cierre normal.
+
+Al terminar (por epocas o por interrupcion), el script **recarga el mejor checkpoint** y escribe:
+
+- `final_metrics.json`: `val_loss`, `test_loss`, sus perplexities, `stop_reason`, paso final y
+  cuantos ejemplos se descartaron por split. La loss es la media ponderada por token.
+- `sample_responses.json`: respuestas generadas con el mejor modelo (greedy, parando en `</s>`).
+
+El prefijo que separa instruccion y respuesta vive en una sola constante,
+`RESPONSE_MARKER` (`finetune_instruction.py`), importada por la inferencia y por el dashboard para
+que el prompt de entrenamiento y el de inferencia no puedan divergir.
+
+Pruebas unitarias (formato de prompt, descarte de largos, LR, parada en `</s>`, loss ponderada):
+
+```bash
+python -m unittest discover -s FineTuning/tests
+```
+

@@ -19,7 +19,7 @@ for path in (EMB_DIR, FT_DIR):
         sys.path.insert(0, str(path))
 
 from emb_gpt2 import GPTModel, TrainConfig, select_device  # noqa: E402
-from finetune_instruction import format_input  # noqa: E402
+from finetune_instruction import RESPONSE_MARKER, format_input  # noqa: E402
 
 
 def build_train_config(raw: Dict) -> TrainConfig:
@@ -64,18 +64,21 @@ def generate(
     device: str,
 ) -> str:
     entry = {"instruction": instruction, "input": input_text, "output": ""}
-    prompt = format_input(entry) + "\n\n### Respuesta:\n"
-    prompt_ids = tokenizer.encode(prompt).ids
+    eos_id = tokenizer.token_to_id("</s>")
+    prompt_ids = tokenizer.encode(format_input(entry) + RESPONSE_MARKER).ids
     idx = torch.tensor([prompt_ids], dtype=torch.long, device=device)
 
+    new_ids = []
     for _ in range(max_new_tokens):
         idx_cond = idx[:, -model.cfg.block_size :]
         logits, _ = model(idx_cond)
         next_id = sample_next_token(logits[:, -1, :], temperature=temperature, top_k=top_k)
+        if eos_id is not None and int(next_id.item()) == eos_id:
+            break
         idx = torch.cat((idx, next_id), dim=1)
+        new_ids.append(int(next_id.item()))
 
-    text = tokenizer.decode(idx[0].tolist())
-    return text[len(prompt) :].strip() if text.startswith(prompt) else text
+    return tokenizer.decode(new_ids).strip()
 
 
 def main() -> None:
