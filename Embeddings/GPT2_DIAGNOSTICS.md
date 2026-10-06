@@ -38,12 +38,12 @@ The script writes `parameter_guide.md` with:
 - practical reason for default values
 - full raw config in JSON
 
-Key defaults for V2:
+Key defaults for GPT-2 Small (see Emb_gptMed.py for the Medium defaults):
 
 - `batch_size=16`: compromise between noisy gradients and memory.
 - `block_size=128`: longer context than toy models.
-- `n_embd=192, n_head=6`: `head_dim=32`, stable and efficient.
-- `n_layer=4`: more capacity without exploding compute.
+- `n_embd=768, n_head=12`: `head_dim=64`, same as the original GPT-2.
+- `n_layer=12`: same depth as GPT-2 small.
 - `precision=auto`: usa mixed precision en CUDA (bf16/fp16) para acelerar y reducir memoria.
 - `lr_max=3e-4, lr_min=3e-5, warmup+cosine`: smoother optimization.
 - `weight_decay=0.1`: regularization.

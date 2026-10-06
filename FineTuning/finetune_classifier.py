@@ -54,10 +54,11 @@ class FineTuneConfig:
     create_demo_data: bool = False
 
     # These are used only if there is no usable config inside the base checkpoint.
+    # Match GPT-2 Small defaults (Embeddings/emb_gpt2.py TrainConfig).
     vocab_size: int = 65536
     n_embd: int = 768
-    n_head: int = 24
-    n_layer: int = 4
+    n_head: int = 12
+    n_layer: int = 12
     block_size: int = 128
 
 
